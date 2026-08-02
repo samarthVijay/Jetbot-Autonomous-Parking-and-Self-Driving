@@ -63,3 +63,4 @@ for epoch in range(NUM_EPOCHS):
     if test_accuracy > best_accuracy:
         torch.save(model.state_dict(), BEST_MODEL_PATH)
         best_accuracy = test_accuracy
+#test
