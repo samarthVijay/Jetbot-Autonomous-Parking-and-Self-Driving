@@ -1,0 +1,22 @@
+{
+  "configurations": [
+    {
+      "name": "JetBot CUDA & C Development",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/drivers/c_driver",
+        "${workspaceFolder}/cuda_practice"
+      ],
+      "defines": [
+        "_GNU_SOURCE",
+        "__linux__",
+        "__CUDACC__"
+      ],
+      "cStandard": "c11",
+      "cppStandard": "c++14",
+      "intelliSenseMode": "windows-gcc-x64",
+      "compilerPath": ""
+    }
+  ],
+  "version": 4
+}
