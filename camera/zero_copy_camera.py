@@ -1,91 +1,158 @@
+# camera/zero_copy_camera.py
+#
+# Hardware-Accelerated Zero-Copy CSI Camera Pipeline for NVIDIA Jetson Nano
+# Integrates GStreamer nvarguscamerasrc + Custom CUDA Preprocessing Kernel (libcuda_preprocess.so)
+
+import os
+import ctypes
 import cv2
 import numpy as np
-import logging
 
 try:
     import torch
-    HAS_TORCH = True
+    _HAS_TORCH = True
 except ImportError:
-    HAS_TORCH = False
-    torch = None
+    _HAS_TORCH = False
 
-logger = logging.getLogger("ZeroCopyCamera")
+# Load compiled CUDA preprocessing shared library
+_SO_PATH = os.path.join(os.path.dirname(__file__), "cuda", "libcuda_preprocess.so")
+_CUDA_LIB = None
+
+if os.path.exists(_SO_PATH):
+    try:
+        _CUDA_LIB = ctypes.CDLL(_SO_PATH)
+        _CUDA_LIB.cuda_preprocess.argtypes = [
+            ctypes.c_void_p,  # d_input (uint8 BGR)
+            ctypes.c_void_p,  # d_output (float32 RGB CHW)
+            ctypes.c_int,     # width
+            ctypes.c_int      # height
+        ]
+        _CUDA_LIB.cuda_preprocess.restype = ctypes.c_int
+    except Exception as e:
+        print(f"[WARN] Failed to load libcuda_preprocess.so: {e}")
+
+
+def gstreamer_pipeline(
+    capture_width=1280,
+    capture_height=720,
+    display_width=224,
+    display_height=224,
+    framerate=30,
+    flip_method=0
+):
+    """
+    Builds Jetson Nano NVMM Hardware-Accelerated GStreamer Pipeline String.
+    Uses nvarguscamerasrc (ISP) -> nvvidconv (HW Scaler) -> video/x-raw BGR
+    """
+    return (
+        f"nvarguscamerasrc ! "
+        f"video/x-raw(memory:NVMM), width=(int){capture_width}, height=(int){capture_height}, "
+        f"format=(string)NV12, framerate=(fraction){framerate}/1 ! "
+        f"nvvidconv flip-method={flip_method} ! "
+        f"video/x-raw, width=(int){display_width}, height=(int){display_height}, format=(string)BGRx ! "
+        f"videoconvert ! "
+        f"video/x-raw, format=(string)BGR ! "
+        f"appsink drop=true sync=false"
+    )
+
 
 class ZeroCopyCamera:
     """
-    High-Performance Zero-Copy Camera Pipeline for Jetson Nano.
-    Leverages NVIDIA Argus CSI camera hardware ISP + GStreamer NVMM memory buffers
-    to directly output PyTorch CUDA Tensors without intermediate host CPU memory copies.
+    Zero-Copy CSI Camera Interface for Jetbot Autonomous Parking.
+    
+    Captures frames using GStreamer hardware acceleration, passes raw frame pointers
+    to the custom CUDA preprocessing kernel, and returns preprocessed PyTorch GPU tensors.
     """
-    def __init__(self, width=224, height=224, fps=30, capture_width=1280, capture_height=720, sensor_id=0, mock=False):
+    def __init__(self, width=224, height=224, fps=30, flip_method=0):
         self.width = width
         self.height = height
         self.fps = fps
-        self.mock = mock
+        self.flip_method = flip_method
+        self.pipeline = gstreamer_pipeline(
+            display_width=self.width,
+            display_height=self.height,
+            framerate=self.fps,
+            flip_method=self.flip_method
+        )
         self.cap = None
+        self._is_opened = False
 
-        if not self.mock:
-            gst_pipeline = (
-                f"nvarguscamerasrc sensor-id={sensor_id} ! "
-                f"video/x-raw(memory:NVMM), width=(int){capture_width}, height=(int){capture_height}, framerate=(fraction){fps}/1 ! "
-                f"nvvidconv flip-method=0 ! "
-                f"video/x-raw, width=(int){width}, height=(int){height}, format=(string)BGRx ! "
-                f"videoconvert ! "
-                f"video/x-raw, format=(string)BGR ! appsink drop=True max-buffers=1"
-            )
-            logger.info(f"Initializing GStreamer Argus Pipeline: {gst_pipeline}")
-            self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
-
-            if not self.cap.isOpened():
-                logger.warning("Failed to open CSI Camera with GStreamer pipeline! Falling back to default OpenCV VideoCapture or MOCK mode.")
-                self.cap = cv2.VideoCapture(0)
-                if not self.cap.isOpened():
-                    logger.warning("No USB or CSI camera found. Entering MOCK camera mode.")
-                    self.mock = True
-
-        # Pre-allocated normalization constants on CUDA GPU memory
-        if HAS_TORCH:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            self.mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
-            self.std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
-        else:
-            self.device = 'cpu'
-
-    def read_frame_bgr(self):
-        """Read a single raw BGR frame (numpy uint8 array)."""
-        if self.mock:
-            # Generate synthetic test frame
-            return np.random.randint(0, 255, (self.height, self.width, 3), dtype=np.uint8)
-
-        ret, frame = self.cap.read()
-        if not ret:
-            logger.error("Failed to read frame from camera")
-            return np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        return frame
-
-    def read_cuda_tensor(self):
-        """
-        Reads camera frame, converts BGR to RGB, normalizes, and returns a pre-processed
-        PyTorch CUDA Tensor [1, 3, H, W] ready for immediate model inference.
-        """
-        bgr_frame = self.read_frame_bgr()
+    def open(self):
+        """Initializes and opens the GStreamer hardware camera pipeline."""
+        print(f"[INFO] Opening GStreamer CSI Camera Pipeline ({self.width}x{self.height} @ {self.fps}fps)...")
+        self.cap = cv2.VideoCapture(self.pipeline, cv2.CAP_GSTREAMER)
         
-        # Convert BGR -> RGB
-        rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        if not self.cap.isOpened():
+            print("[WARN] GStreamer pipeline failed to open. Falling back to V4L2 default camera index 0...")
+            self.cap = cv2.VideoCapture(0)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
-        if not HAS_TORCH:
-            return rgb_frame
+        self._is_opened = self.cap.isOpened()
+        if self._is_opened:
+            print("[SUCCESS] Camera pipeline online!")
+        else:
+            print("[ERROR] Failed to initialize camera hardware.")
+        return self._is_opened
 
-        # Zero-copy CPU pin-memory to CUDA tensor initialization
-        # Torch tensor wrapped directly over frame buffer
-        tensor = torch.from_numpy(rgb_frame).permute(2, 0, 1).unsqueeze(0).float().to(self.device, non_blocking=True)
-        tensor /= 255.0
+    def read_raw(self):
+        """Captures a raw BGR uint8 frame [224, 224, 3] from the hardware pipeline."""
+        if not self._is_opened:
+            raise RuntimeError("Camera is not opened. Call open() first.")
+        ret, frame = self.cap.read()
+        if not ret or frame is None:
+            return False, None
+        return True, frame
 
-        # Apply ImageNet normalization directly on GPU
-        tensor = (tensor - self.mean) / self.std
-        return tensor
+    def read_preprocessed_cuda(self, d_output_ptr):
+        """
+        Captures a frame and runs it through our custom CUDA preprocessing kernel.
+        
+        The frame is transferred to GPU memory via PyTorch before the kernel
+        reads it, since CUDA kernels cannot access CPU memory pointers.
+        
+        Args:
+            d_output_ptr: Memory address (int/void_p) of pre-allocated GPU float32 tensor [3, 224, 224]
+        
+        Returns:
+            bool: Success flag
+        """
+        ret, frame = self.read_raw()
+        if not ret:
+            return False
+
+        if _CUDA_LIB is None:
+            raise RuntimeError("CUDA preprocessing library libcuda_preprocess.so not loaded!")
+        if not _HAS_TORCH:
+            raise RuntimeError("PyTorch is required for GPU memory transfer!")
+
+        # Transfer frame to GPU (reuse buffer to avoid repeated allocation)
+        frame_contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
+        if not hasattr(self, '_d_input') or self._d_input.shape != frame_contiguous.shape:
+            self._d_input = torch.empty(frame_contiguous.shape, dtype=torch.uint8, device='cuda')
+        self._d_input.copy_(torch.from_numpy(frame_contiguous))
+        input_ptr = self._d_input.data_ptr()
+
+        # Execute CUDA Kernel (both pointers now point to GPU memory)
+        status = _CUDA_LIB.cuda_preprocess(
+            ctypes.c_void_p(input_ptr),
+            ctypes.c_void_p(d_output_ptr),
+            self.width,
+            self.height
+        )
+
+        return status == 0
 
     def release(self):
-        if self.cap and not self.mock:
+        """Releases camera hardware resources."""
+        if self.cap:
             self.cap.release()
-            logger.info("Camera pipeline released.")
+            self._is_opened = False
+            print("[INFO] Camera hardware released.")
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()

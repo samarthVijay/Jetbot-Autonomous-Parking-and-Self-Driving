@@ -19,7 +19,7 @@ class ParkingFSM:
     Finite State Machine (FSM) controlling JetBot autonomous driving and parking.
     Translates perception model output (probabilities) into discrete motor control actions.
     """
-    def __init__(self, motor_controller, base_speed=0.20, confidence_threshold=0.60):
+    def __init__(self, motor_controller, base_speed=0.20, confidence_threshold=0.65):
         self.motors = motor_controller
         self.base_speed = base_speed
         self.confidence_threshold = confidence_threshold
@@ -28,11 +28,17 @@ class ParkingFSM:
         self.spot_side = None  # 'left' or 'right'
         self.state_start_time = time.time()
 
+        # Temporal Debounce Counters (filters single-frame prediction noise)
+        self.spot_consecutive_count = 0
+        self.last_detected_spot_side = None
+        self.REQUIRED_CONSECUTIVE_FRAMES = 3
+
     def set_state(self, new_state):
         if self.state != new_state:
             logger.info(f"FSM Transition: {self.state.name} -> {new_state.name}")
             self.state = new_state
             self.state_start_time = time.time()
+            self.spot_consecutive_count = 0
 
     def update(self, class_idx, class_name, confidence):
         """
@@ -43,27 +49,40 @@ class ParkingFSM:
         """
         elapsed = time.time() - self.state_start_time
 
-        # Safety Override: If obstacle is detected with high confidence, stop immediately
-        if class_name == "obstacle_blocked" and confidence >= self.confidence_threshold:
-            self.motors.stop()
-            self.set_state(ParkingState.SAFETY_STOP)
-            return
+        # Safety Override: Emergency stop for obstacles ahead EXCEPT while maneuvering into a spot
+        if self.state != ParkingState.MANEUVERING and self.state != ParkingState.PARKED:
+            if class_name == "obstacle_blocked" and confidence >= self.confidence_threshold:
+                self.motors.stop()
+                self.set_state(ParkingState.SAFETY_STOP)
+                return
 
         if self.state == ParkingState.IDLE:
             self.motors.stop()
 
         elif self.state == ParkingState.SEARCHING_SPOT:
-            if class_name == "path_free" and confidence >= self.confidence_threshold:
-                # Normal forward drive along lane
+            if class_name in ["parking_spot_left", "parking_spot_right"] and confidence >= self.confidence_threshold:
+                side = "left" if class_name == "parking_spot_left" else "right"
+                if side == self.last_detected_spot_side:
+                    self.spot_consecutive_count += 1
+                else:
+                    self.last_detected_spot_side = side
+                    self.spot_consecutive_count = 1
+
+                # Require 3 consecutive consistent frames to confirm spot detection!
+                if self.spot_consecutive_count >= self.REQUIRED_CONSECUTIVE_FRAMES:
+                    self.spot_side = side
+                    self.motors.stop()
+                    self.set_state(ParkingState.SPOT_IDENTIFIED)
+                else:
+                    # Slow creep while confirming spot
+                    self.motors.drive_vector(linear_vel=self.base_speed * 0.4, steering=0.0)
+
+            elif class_name == "path_free" and confidence >= self.confidence_threshold:
+                self.spot_consecutive_count = 0
                 self.motors.drive_vector(linear_vel=self.base_speed, steering=0.0)
 
-            elif class_name in ["parking_spot_left", "parking_spot_right"] and confidence >= self.confidence_threshold:
-                self.spot_side = "left" if class_name == "parking_spot_left" else "right"
-                self.motors.stop()
-                self.set_state(ParkingState.SPOT_IDENTIFIED)
-
             else:
-                # Creep forward cautiously if low confidence
+                self.spot_consecutive_count = 0
                 self.motors.drive_vector(linear_vel=self.base_speed * 0.5, steering=0.0)
 
         elif self.state == ParkingState.SPOT_IDENTIFIED:
@@ -87,7 +106,6 @@ class ParkingFSM:
 
         elif self.state == ParkingState.PARKED:
             self.motors.stop()
-            logger.info("JetBot successfully parked!")
 
         elif self.state == ParkingState.SAFETY_STOP:
             self.motors.stop()

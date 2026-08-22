@@ -117,11 +117,11 @@ int pca9685_set_motor_speeds(int fd, int addr, float left_speed, float right_spe
     int r_pwm = (int)(r_duty * 4095.0f);
 
     if (right_speed > 0.001f) {
-        pca9685_set_pwm(fd, addr, 12, 0, 4096);  // IN1 = LOW
-        pca9685_set_pwm(fd, addr, 11, 4096, 0);  // IN2 = HIGH (camera forward)
-    } else if (right_speed < -0.001f) {
-        pca9685_set_pwm(fd, addr, 12, 4096, 0);  // IN1 = HIGH
+        pca9685_set_pwm(fd, addr, 12, 4096, 0);  // IN1 = HIGH (inverted for forward alignment)
         pca9685_set_pwm(fd, addr, 11, 0, 4096);  // IN2 = LOW
+    } else if (right_speed < -0.001f) {
+        pca9685_set_pwm(fd, addr, 12, 0, 4096);  // IN1 = LOW
+        pca9685_set_pwm(fd, addr, 11, 4096, 0);  // IN2 = HIGH
     } else {
         pca9685_set_pwm(fd, addr, 12, 0, 4096);
         pca9685_set_pwm(fd, addr, 11, 0, 4096);
