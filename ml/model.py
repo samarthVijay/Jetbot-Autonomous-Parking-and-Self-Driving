@@ -2,13 +2,21 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 
+# 4-class taxonomy. parking_spot_occupied is dropped — from a front camera it is
+# visually indistinguishable from blocked and adds training noise.
+# Existing dataset folders are remapped in dataset.py:
+#   path_free/             -> lane_clear   (0)
+#   parking_spot_left/     -> spot_left    (1)
+#   parking_spot_right/    -> spot_right   (2)
+#   obstacle_blocked/      -> blocked      (3)
+#   parking_spot_occupied/ -> blocked      (3)  [merged]
 CLASS_NAMES = [
-    "path_free",             # 0: Open lane ahead
-    "obstacle_blocked",      # 1: Blocked by wall or object
-    "parking_spot_left",     # 2: Open spot on left side
-    "parking_spot_right",    # 3: Open spot on right side
-    "parking_spot_occupied"  # 4: Spot occupied by another vehicle/object
+    "lane_clear",   # 0: Open lane ahead, continue forward
+    "spot_left",    # 1: Open parking gap visible on LEFT side of frame
+    "spot_right",   # 2: Open parking gap visible on RIGHT side of frame
+    "blocked",      # 3: Obstacle / wall / occupied spot blocking path or sides
 ]
+
 
 class ParkingNet(nn.Module):
     """
@@ -23,15 +31,22 @@ class ParkingNet(nn.Module):
         if backbone == "mobilenet_v2":
             self.backbone = models.mobilenet_v2(pretrained=pretrained)
             in_features = self.backbone.classifier[1].in_features
-            # Replace final classification head
             self.backbone.classifier = nn.Sequential(
+                nn.Dropout(p=0.3),
+                nn.Linear(in_features, 128),
+                nn.ReLU(),
                 nn.Dropout(p=0.2),
-                nn.Linear(in_features, num_classes)
+                nn.Linear(128, num_classes)
             )
         elif backbone == "resnet18":
             self.backbone = models.resnet18(pretrained=pretrained)
             in_features = self.backbone.fc.in_features
-            self.backbone.fc = nn.Linear(in_features, num_classes)
+            self.backbone.fc = nn.Sequential(
+                nn.Linear(in_features, 128),
+                nn.ReLU(),
+                nn.Dropout(p=0.2),
+                nn.Linear(128, num_classes)
+            )
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
 
