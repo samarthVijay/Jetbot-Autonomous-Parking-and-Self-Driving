@@ -10,6 +10,7 @@ I designed a highly advanced, autonomous mobile robot architecture for the NVIDI
 
 ## Architecture Overview
 
+```
 
 Jetbot-Autonomous-Parking-and-Self-Driving/
 ├── README.md                           # Master project guide & architecture overview
@@ -32,13 +33,12 @@ Jetbot-Autonomous-Parking-and-Self-Driving/
 ├── navigation/
 │   └── parking_fsm.py                  # Autonomous Parking Finite State Machine
 └── main_autonomous_park.py            # Main entry point combining Driver + Camera + ML + FSM
-
-
+```
 ---
 
-## 3 Core Engineering Stages
+## 3 Project Stages
 
-### Stage A: Low-Level Hardware Drivers (I2C / PCA9685 + TB6612FNG)
+### Stage 1: Low-Level Hardware Drivers (I2C / PCA9685 + TB6612FNG)
 - **Direct Register Control**: Communicates directly with the PCA9685 IC over /dev/i2c-1 without relying on high-level vendor libraries like the Jetbot templates.
 - **Dual Implementation**:
   - Pure Python implementation in [drivers/pca9685_i2c.py](file:///C:/Users/samva/Desktop/Jetbot%20Personal%20Project/Jetbot-Autonomous-Parking-and-Self-Driving/drivers/pca9685_i2c.py) using smbus2.
@@ -46,17 +46,17 @@ Jetbot-Autonomous-Parking-and-Self-Driving/
 
 #### Compiling the C Shared Library
 On the Jetson Nano, navigate to drivers/c_driver/ and build:
-bash
+```bash
 cd drivers/c_driver
 make
+```
 
-
-### Stage B: Zero-Copy CUDA Camera Pipeline
+### Stage 2: Zero-Copy CUDA Camera Pipeline
 - **Memory Architecture**: On Jetson's SoC architecture, CPU and GPU share physical LPDDR4 memory.
 - **Pipeline**: We utilize the GStreamer nvarguscamerasrc with video/x-raw(memory:NVMM) to map CSI camera frames directly into CUDA memory tensors, bypassing host CPU array allocations.
 - Implementation in [camera/zero_copy_camera.py](file:///C:/Users/samva/Desktop/Jetbot%20Personal%20Project/Jetbot-Autonomous-Parking-and-Self-Driving/camera/zero_copy_camera.py).
 
-### Stage C: Multi-Class Perception & Autonomous Parking FSM
+### Stage 3: Multi-Class Perception & Autonomous Parking FSM
 - **Perception Model**: Transfer learning with MobileNetV2 classifying 5 distinct states:
   1. path_free: Open lane ahead.
   2. obstacle_blocked: Barrier or obstacle ahead.
@@ -71,22 +71,22 @@ make
 
 ### 1. Collect Data for Multi-Class Model
 Run the interactive dataset collector:
-bash
+```bash
 python ml/dataset_collector.py
-
+```
 Use keys 0 through 4 to capture images for each corresponding class.
 
 ### 2. Train the Perception Model
 Train MobileNetV2 on your collected dataset and export to ONNX:
-bash
+```bash
 python ml/train.py
-
+```
 
 ### 3. Launch Autonomous Parking
 Run the full system:
-bash
+```bash
 python main_autonomous_park.py
-
+```
 
 ---
 
