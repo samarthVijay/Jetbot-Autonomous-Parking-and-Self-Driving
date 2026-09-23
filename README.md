@@ -7,7 +7,8 @@
 I designed a highly advanced, autonomous mobile robot architecture for the NVIDIA JetBot. This project aimed to move beyond basic Jupyter notebooks into modular, low-level hardware control, GPU zero-copy camera memory pipelines, and a Finite State Machine (FSM) autonomous parking controller, leveraging the full computational power of the Jetson Nano Developer Kit. 
 
 ---
-
+![My Project Screenshot](imagejetbot1.jpeg)
+![My Awesome Animation](imagejetbot3.gif)
 ## Architecture Overview
 
 ```
